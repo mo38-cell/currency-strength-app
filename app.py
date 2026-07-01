@@ -25,8 +25,7 @@ pair_defs = [
     {"symbol": "GBPAUD=X", "pair": "GBPAUD", "base": "GBP", "quote": "AUD"},
 ]
 
-ma_window = 20
-slope_lookback = 5
+kijun_lookback = 5
 
 st.markdown(
     """
@@ -100,13 +99,101 @@ def get_data(symbols, period, interval):
         progress=False,
         threads=True
     )
+
     if isinstance(data.columns, pd.MultiIndex):
+        high = data["High"]
+        low = data["Low"]
         close = data["Close"]
     else:
+        high = data[["High"]]
+        low = data[["Low"]]
         close = data[["Close"]]
-    return close
 
-def calculate_strength(close):
+    return high, low, close
+
+
+def ichimoku_score(df):
+    tenkan = (
+        df["High"].rolling(9).max()
+        + df["Low"].rolling(9).min()
+    ) / 2
+
+    kijun = (
+        df["High"].rolling(26).max()
+        + df["Low"].rolling(26).min()
+    ) / 2
+
+    senkou_a = ((tenkan + kijun) / 2).shift(26)
+
+    senkou_b = (
+        df["High"].rolling(52).max()
+        + df["Low"].rolling(52).min()
+    ) / 2
+    senkou_b = senkou_b.shift(26)
+
+    latest_close = df["Close"].iloc[-1]
+    latest_tenkan = tenkan.iloc[-1]
+    latest_kijun = kijun.iloc[-1]
+    latest_senkou_a = senkou_a.iloc[-1]
+    latest_senkou_b = senkou_b.iloc[-1]
+
+    needed = [
+        latest_tenkan,
+        latest_kijun,
+        latest_senkou_a,
+        latest_senkou_b,
+    ]
+
+    if any(pd.isna(x) for x in needed):
+        return None
+
+    cloud_upper = max(latest_senkou_a, latest_senkou_b)
+    cloud_lower = min(latest_senkou_a, latest_senkou_b)
+
+    score = 0
+    details = []
+
+    if latest_close > latest_kijun:
+        score += 1
+        details.append("終値＞基準線 +1")
+    elif latest_close < latest_kijun:
+        score -= 1
+        details.append("終値＜基準線 -1")
+
+    if latest_tenkan > latest_kijun:
+        score += 1
+        details.append("転換線＞基準線 +1")
+    elif latest_tenkan < latest_kijun:
+        score -= 1
+        details.append("転換線＜基準線 -1")
+
+    if latest_close > cloud_upper:
+        score += 2
+        details.append("終値＞雲上限 +2")
+    elif latest_close < cloud_lower:
+        score -= 2
+        details.append("終値＜雲下限 -2")
+    else:
+        details.append("終値は雲の中 0")
+
+    if len(kijun.dropna()) > kijun_lookback:
+        kijun_now = kijun.iloc[-1]
+        kijun_past = kijun.iloc[-1 - kijun_lookback]
+
+        if not pd.isna(kijun_past):
+            if kijun_now > kijun_past:
+                score += 1
+                details.append("基準線上向き +1")
+            elif kijun_now < kijun_past:
+                score -= 1
+                details.append("基準線下向き -1")
+            else:
+                details.append("基準線横ばい 0")
+
+    return score, " / ".join(details)
+
+
+def calculate_strength(high, low, close):
     strength = {ccy: 0.0 for ccy in currencies}
     counts = {ccy: 0 for ccy in currencies}
     pair_rows = []
@@ -120,18 +207,29 @@ def calculate_strength(close):
         if symbol not in close.columns:
             continue
 
-        series = close[symbol].dropna()
-        if len(series) < ma_window + slope_lookback + 1:
+        df = pd.concat(
+            [
+                high[symbol],
+                low[symbol],
+                close[symbol],
+            ],
+            axis=1
+        ).dropna()
+
+        df.columns = ["High", "Low", "Close"]
+
+        if len(df) < 80:
             continue
 
-        ma20 = series.rolling(ma_window).mean().dropna()
-        if len(ma20) < slope_lookback + 1:
+        result = ichimoku_score(df)
+
+        if result is None:
             continue
 
-        slope = np.log(ma20.iloc[-1] / ma20.iloc[-1 - slope_lookback]) * 100
+        score, details = result
 
-        strength[base] += slope
-        strength[quote] -= slope
+        strength[base] += score
+        strength[quote] -= score
         counts[base] += 1
         counts[quote] += 1
 
@@ -139,10 +237,12 @@ def calculate_strength(close):
             "Pair": pair,
             "Base": base,
             "Quote": quote,
-            "20MA Slope": slope
+            "Ichimoku Score": score,
+            "Details": details
         })
 
     strength_avg = {}
+
     for ccy in currencies:
         if counts[ccy] > 0:
             strength_avg[ccy] = strength[ccy] / counts[ccy]
@@ -153,46 +253,56 @@ def calculate_strength(close):
     pair_df = pd.DataFrame(pair_rows)
 
     if not pair_df.empty:
-        pair_df = pair_df.sort_values("20MA Slope", ascending=False)
+        pair_df = pair_df.sort_values("Ichimoku Score", ascending=False)
 
     return ranking, pair_df
+
 
 def find_watch_pair(strongest, weakest):
     for p in pair_defs:
         if p["base"] == strongest and p["quote"] == weakest:
             return p["pair"], "買い目線"
+
         if p["base"] == weakest and p["quote"] == strongest:
             return p["pair"], "売り目線"
+
     return f"{strongest}{weakest}", "監視"
 
+
 def strength_label(score):
-    if score >= 0.08:
+    if score >= 2.0:
         return "かなり強い"
-    elif score >= 0.03:
+    elif score >= 1.0:
         return "強い"
-    elif score > -0.03:
+    elif score > -1.0:
         return "中立"
-    elif score > -0.08:
+    elif score > -2.0:
         return "弱い"
     else:
         return "かなり弱い"
 
-st.markdown('<div class="main-title">💱 Currency Strength</div>', unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="main-title">💱 Currency Strength</div>',
+    unsafe_allow_html=True
+)
 
 timeframe = st.radio("時間足", ["1時間足", "15分足"], horizontal=True)
 
 if timeframe == "1時間足":
     interval = "1h"
     period = "30d"
-    timeframe_note = "1時間足 / 20MA / 5本前比較"
+    timeframe_note = "1時間足 / 一目均衡表スコア"
 else:
     interval = "15m"
-    period = "30d"
-    timeframe_note = "15分足 / 20MA / 5本前比較"
+    period = "5d"
+    timeframe_note = "15分足 / 一目均衡表スコア"
 
-st.markdown(f'<div class="sub-title">{timeframe_note}</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="sub-title">{timeframe_note}</div>',
+    unsafe_allow_html=True
+)
 
-# 更新ボタンを上部に配置
 refresh_col, time_col = st.columns([1, 2])
 
 with refresh_col:
@@ -206,8 +316,8 @@ with time_col:
 symbols = [p["symbol"] for p in pair_defs]
 
 try:
-    close = get_data(symbols, period, interval)
-    ranking, pair_df = calculate_strength(close)
+    high, low, close = get_data(symbols, period, interval)
+    ranking, pair_df = calculate_strength(high, low, close)
 
     if ranking.empty:
         st.error("データを取得できませんでした。時間をおいて再度試してください。")
@@ -230,20 +340,24 @@ try:
     )
 
     col1, col2 = st.columns(2)
+
     with col1:
-        st.metric("Strongest", strongest, f"{ranking.iloc[0]:.4f}")
+        st.metric("Strongest", strongest, f"{ranking.iloc[0]:.2f}")
+
     with col2:
-        st.metric("Weakest", weakest, f"{ranking.iloc[-1]:.4f}")
+        st.metric("Weakest", weakest, f"{ranking.iloc[-1]:.2f}")
 
     st.subheader("通貨ランキング")
+
     for i, (ccy, score) in enumerate(ranking.items(), start=1):
         label = strength_label(score)
+
         st.markdown(
             f"""
             <div class="currency-card">
                 <div class="currency-line">
                     <div class="currency-rank">{i}. {ccy}</div>
-                    <div class="currency-score">{score:.4f}</div>
+                    <div class="currency-score">{score:.2f}</div>
                 </div>
                 <div class="small-note">{label}</div>
             </div>
@@ -252,26 +366,46 @@ try:
         )
 
     st.subheader("通貨強弱チャート")
+
     chart_df = ranking.rename("Strength").to_frame()
     st.bar_chart(chart_df)
 
-    st.subheader("ペア別 20MA傾き")
+    st.subheader("ペア別 一目スコア")
+
     if not pair_df.empty:
-        display_pair_df = pair_df[["Pair", "20MA Slope"]].copy()
-        display_pair_df["20MA Slope"] = display_pair_df["20MA Slope"].round(4)
-        st.dataframe(display_pair_df, hide_index=True, use_container_width=True)
+        display_pair_df = pair_df[["Pair", "Ichimoku Score"]].copy()
+        display_pair_df["Ichimoku Score"] = display_pair_df["Ichimoku Score"].round(2)
+
+        st.dataframe(
+            display_pair_df,
+            hide_index=True,
+            use_container_width=True
+        )
+
+        with st.expander("ペア別スコア内訳"):
+            detail_df = pair_df[["Pair", "Ichimoku Score", "Details"]].copy()
+            st.dataframe(
+                detail_df,
+                hide_index=True,
+                use_container_width=True
+            )
 
     valid_close = close.dropna(how="all")
+
     if not valid_close.empty:
         last_time = valid_close.index[-1]
+
         try:
             if last_time.tzinfo is not None:
                 last_time = last_time.tz_convert("Asia/Tokyo")
         except Exception:
             pass
+
         st.caption(f"Last data: {last_time.strftime('%Y-%m-%d %H:%M')}")
 
-    st.caption("これは売買指示ではなく、20MAの傾きに基づく通貨強弱の可視化です。")
+    st.caption(
+        "これは売買指示ではなく、一目均衡表スコアに基づく通貨強弱の可視化です。"
+    )
 
 except Exception as e:
     st.error("エラーが発生しました。")
