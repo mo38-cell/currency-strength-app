@@ -196,7 +196,7 @@ st.markdown(f'<div class="sub-title">{timeframe_note}</div>', unsafe_allow_html=
 refresh_col, time_col = st.columns([1, 2])
 
 with refresh_col:
-    if st.button("🔄 更新", use_container_width=True):
+    if st.button("更新", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
