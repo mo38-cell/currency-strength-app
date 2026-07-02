@@ -25,6 +25,7 @@ pair_defs = [
     {"symbol": "GBPAUD=X", "pair": "GBPAUD", "base": "GBP", "quote": "AUD"},
 ]
 
+tenkan_lookback = 3
 kijun_lookback = 5
 
 st.markdown(
@@ -89,8 +90,9 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 @st.cache_data(ttl=900)
-def get_data(symbols, period, interval):
+def get_data(symbols, period, interval, resample_4h=False):
     data = yf.download(
         tickers=symbols,
         period=period,
@@ -108,6 +110,11 @@ def get_data(symbols, period, interval):
         high = data[["High"]]
         low = data[["Low"]]
         close = data[["Close"]]
+
+    if resample_4h:
+        high = high.resample("4h").max()
+        low = low.resample("4h").min()
+        close = close.resample("4h").last()
 
     return high, low, close
 
@@ -153,29 +160,42 @@ def ichimoku_score(df):
     score = 0
     details = []
 
+    # 1. 終値と転換線
+    if latest_close > latest_tenkan:
+        score += 1
+        details.append("終値＞転換線 +1")
+    elif latest_close < latest_tenkan:
+        score -= 1
+        details.append("終値＜転換線 -1")
+    else:
+        details.append("終値＝転換線 0")
+
+    # 2. 転換線の向き
+    if len(tenkan.dropna()) > tenkan_lookback:
+        tenkan_now = tenkan.iloc[-1]
+        tenkan_past = tenkan.iloc[-1 - tenkan_lookback]
+
+        if not pd.isna(tenkan_past):
+            if tenkan_now > tenkan_past:
+                score += 1
+                details.append("転換線上向き +1")
+            elif tenkan_now < tenkan_past:
+                score -= 1
+                details.append("転換線下向き -1")
+            else:
+                details.append("転換線横ばい 0")
+
+    # 3. 終値と基準線
     if latest_close > latest_kijun:
         score += 1
         details.append("終値＞基準線 +1")
     elif latest_close < latest_kijun:
         score -= 1
         details.append("終値＜基準線 -1")
-
-    if latest_tenkan > latest_kijun:
-        score += 1
-        details.append("転換線＞基準線 +1")
-    elif latest_tenkan < latest_kijun:
-        score -= 1
-        details.append("転換線＜基準線 -1")
-
-    if latest_close > cloud_upper:
-        score += 2
-        details.append("終値＞雲上限 +2")
-    elif latest_close < cloud_lower:
-        score -= 2
-        details.append("終値＜雲下限 -2")
     else:
-        details.append("終値は雲の中 0")
+        details.append("終値＝基準線 0")
 
+    # 4. 基準線の向き
     if len(kijun.dropna()) > kijun_lookback:
         kijun_now = kijun.iloc[-1]
         kijun_past = kijun.iloc[-1 - kijun_lookback]
@@ -189,6 +209,16 @@ def ichimoku_score(df):
                 details.append("基準線下向き -1")
             else:
                 details.append("基準線横ばい 0")
+
+    # 5. 雲との位置
+    if latest_close > cloud_upper:
+        score += 1
+        details.append("終値＞雲上限 +1")
+    elif latest_close < cloud_lower:
+        score -= 1
+        details.append("終値＜雲下限 -1")
+    else:
+        details.append("終値は雲の中 0")
 
     return score, " / ".join(details)
 
@@ -208,17 +238,13 @@ def calculate_strength(high, low, close):
             continue
 
         df = pd.concat(
-            [
-                high[symbol],
-                low[symbol],
-                close[symbol],
-            ],
+            [high[symbol], low[symbol], close[symbol]],
             axis=1
         ).dropna()
 
         df.columns = ["High", "Low", "Close"]
 
-        if len(df) < 80:
+        if len(df) < 90:
             continue
 
         result = ichimoku_score(df)
@@ -244,10 +270,7 @@ def calculate_strength(high, low, close):
     strength_avg = {}
 
     for ccy in currencies:
-        if counts[ccy] > 0:
-            strength_avg[ccy] = strength[ccy] / counts[ccy]
-        else:
-            strength_avg[ccy] = np.nan
+        strength_avg[ccy] = strength[ccy] / counts[ccy] if counts[ccy] > 0 else np.nan
 
     ranking = pd.Series(strength_avg).dropna().sort_values(ascending=False)
     pair_df = pd.DataFrame(pair_rows)
@@ -270,13 +293,13 @@ def find_watch_pair(strongest, weakest):
 
 
 def strength_label(score):
-    if score >= 2.0:
+    if score >= 3:
         return "かなり強い"
-    elif score >= 1.0:
+    elif score >= 1:
         return "強い"
-    elif score > -1.0:
+    elif score > -1:
         return "中立"
-    elif score > -2.0:
+    elif score > -3:
         return "弱い"
     else:
         return "かなり弱い"
@@ -287,16 +310,29 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-timeframe = st.radio("時間足", ["1時間足", "15分足"], horizontal=True)
+timeframe = st.radio(
+    "時間足",
+    ["5分足", "1時間足", "4時間足"],
+    horizontal=True
+)
 
-if timeframe == "1時間足":
-    interval = "1h"
-    period = "30d"
-    timeframe_note = "1時間足 / 一目均衡表スコア"
-else:
-    interval = "15m"
+if timeframe == "5分足":
+    interval = "5m"
     period = "5d"
-    timeframe_note = "15分足 / 一目均衡表スコア"
+    resample_4h = False
+    timeframe_note = "5分足 / 一目均衡表スコア / 初動重視"
+
+elif timeframe == "1時間足":
+    interval = "1h"
+    period = "60d"
+    resample_4h = False
+    timeframe_note = "1時間足 / 一目均衡表スコア / デイトレ確認"
+
+else:
+    interval = "1h"
+    period = "180d"
+    resample_4h = True
+    timeframe_note = "4時間足 / 一目均衡表スコア / 上位足確認"
 
 st.markdown(
     f'<div class="sub-title">{timeframe_note}</div>',
@@ -316,7 +352,7 @@ with time_col:
 symbols = [p["symbol"] for p in pair_defs]
 
 try:
-    high, low, close = get_data(symbols, period, interval)
+    high, low, close = get_data(symbols, period, interval, resample_4h)
     ranking, pair_df = calculate_strength(high, low, close)
 
     if ranking.empty:
