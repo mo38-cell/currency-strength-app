@@ -25,33 +25,69 @@ pair_defs = [
     {"symbol": "GBPAUD=X", "pair": "GBPAUD", "base": "GBP", "quote": "AUD"},
 ]
 
-tenkan_lookback = 3
-kijun_lookback = 5
-stoch_period = 14
-stoch_upper = 93
-stoch_lower = 7
+TENKAN_PERIOD = 9
+KIJUN_PERIOD = 26
+TENKAN_SLOPE_LOOKBACK = 3
+STOCH_PERIOD = 14
+STOCH_UPPER = 93
+STOCH_LOWER = 7
 
 st.markdown(
     """
     <style>
-    .main-title {font-size: 1.8rem; font-weight: 800; text-align: center;}
-    .sub-title {font-size: 0.9rem; text-align: center; opacity: 0.75; margin-bottom: 1.0rem;}
-    .watch-card {
-        border-radius: 18px; padding: 18px; margin: 12px 0px;
-        border: 1px solid rgba(128,128,128,0.25);
-        background: rgba(128,128,128,0.08); text-align: center;
+    .title {
+        text-align: center;
+        font-size: 1.8rem;
+        font-weight: 800;
+        margin-bottom: 0.2rem;
     }
-    .watch-pair {font-size: 2.1rem; font-weight: 900;}
-    .watch-direction {font-size: 1.2rem; font-weight: 700;}
-    .currency-card {
-        border-radius: 14px; padding: 12px 14px; margin-bottom: 8px;
+    .subtitle {
+        text-align: center;
+        font-size: 0.9rem;
+        opacity: 0.7;
+        margin-bottom: 1rem;
+    }
+    .watch {
+        text-align: center;
+        border: 1px solid rgba(128,128,128,0.25);
+        background: rgba(128,128,128,0.08);
+        border-radius: 18px;
+        padding: 18px;
+        margin: 12px 0 18px 0;
+    }
+    .watch-label {
+        font-size: 0.85rem;
+        opacity: 0.7;
+    }
+    .watch-pair {
+        font-size: 2.2rem;
+        font-weight: 900;
+        margin: 4px 0;
+    }
+    .watch-dir {
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+    .rank-card {
         border: 1px solid rgba(128,128,128,0.20);
         background: rgba(128,128,128,0.06);
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin-bottom: 8px;
     }
-    .currency-line {display: flex; justify-content: space-between; align-items: center;}
-    .currency-rank {font-size: 1.15rem; font-weight: 800;}
-    .currency-score {font-size: 1.05rem; font-weight: 700;}
-    .small-note {font-size: 0.8rem; opacity: 0.7; text-align: center;}
+    .rank-line {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .rank-name {
+        font-size: 1.15rem;
+        font-weight: 800;
+    }
+    .rank-score {
+        font-size: 1.05rem;
+        font-weight: 700;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -86,86 +122,68 @@ def get_data(symbols, period, interval, resample_4h=False):
     return high, low, close
 
 
+def make_ohlc(high, low, close, symbol):
+    if symbol not in close.columns:
+        return None
+
+    df = pd.concat(
+        [high[symbol], low[symbol], close[symbol]],
+        axis=1
+    ).dropna()
+
+    df.columns = ["High", "Low", "Close"]
+
+    if len(df) < KIJUN_PERIOD + TENKAN_SLOPE_LOOKBACK + 1:
+        return None
+
+    return df
+
+
 def ichimoku_score(df):
-    tenkan = (df["High"].rolling(9).max() + df["Low"].rolling(9).min()) / 2
-    kijun = (df["High"].rolling(26).max() + df["Low"].rolling(26).min()) / 2
-    senkou_a = ((tenkan + kijun) / 2).shift(26)
-    senkou_b = ((df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2).shift(26)
+    tenkan = (
+        df["High"].rolling(TENKAN_PERIOD).max()
+        + df["Low"].rolling(TENKAN_PERIOD).min()
+    ) / 2
+
+    kijun = (
+        df["High"].rolling(KIJUN_PERIOD).max()
+        + df["Low"].rolling(KIJUN_PERIOD).min()
+    ) / 2
 
     latest_close = df["Close"].iloc[-1]
     latest_tenkan = tenkan.iloc[-1]
     latest_kijun = kijun.iloc[-1]
-    latest_senkou_a = senkou_a.iloc[-1]
-    latest_senkou_b = senkou_b.iloc[-1]
 
-    if any(pd.isna(x) for x in [latest_tenkan, latest_kijun, latest_senkou_a, latest_senkou_b]):
+    if pd.isna(latest_tenkan) or pd.isna(latest_kijun):
         return None
 
-    cloud_upper = max(latest_senkou_a, latest_senkou_b)
-    cloud_lower = min(latest_senkou_a, latest_senkou_b)
-
     score = 0
-    details = []
 
     if latest_close > latest_tenkan:
         score += 1
-        details.append("終値＞転換線 +1")
     elif latest_close < latest_tenkan:
         score -= 1
-        details.append("終値＜転換線 -1")
-    else:
-        details.append("終値＝転換線 0")
 
-    if len(tenkan.dropna()) > tenkan_lookback:
-        tenkan_now = tenkan.iloc[-1]
-        tenkan_past = tenkan.iloc[-1 - tenkan_lookback]
+    tenkan_now = tenkan.iloc[-1]
+    tenkan_past = tenkan.iloc[-1 - TENKAN_SLOPE_LOOKBACK]
 
+    if not pd.isna(tenkan_past):
         if tenkan_now > tenkan_past:
             score += 1
-            details.append("転換線上向き +1")
         elif tenkan_now < tenkan_past:
             score -= 1
-            details.append("転換線下向き -1")
-        else:
-            details.append("転換線横ばい 0")
 
     if latest_close > latest_kijun:
         score += 1
-        details.append("終値＞基準線 +1")
     elif latest_close < latest_kijun:
         score -= 1
-        details.append("終値＜基準線 -1")
-    else:
-        details.append("終値＝基準線 0")
 
-    if len(kijun.dropna()) > kijun_lookback:
-        kijun_now = kijun.iloc[-1]
-        kijun_past = kijun.iloc[-1 - kijun_lookback]
-
-        if kijun_now > kijun_past:
-            score += 1
-            details.append("基準線上向き +1")
-        elif kijun_now < kijun_past:
-            score -= 1
-            details.append("基準線下向き -1")
-        else:
-            details.append("基準線横ばい 0")
-
-    if latest_close > cloud_upper:
-        score += 1
-        details.append("終値＞雲上限 +1")
-    elif latest_close < cloud_lower:
-        score -= 1
-        details.append("終値＜雲下限 -1")
-    else:
-        details.append("終値は雲の中 0")
-
-    return score, " / ".join(details)
+    return score
 
 
-def stochastic_k(df, k_period=14):
-    lowest_low = df["Low"].rolling(k_period).min()
-    highest_high = df["High"].rolling(k_period).max()
+def stochastic_k(df):
+    lowest_low = df["Low"].rolling(STOCH_PERIOD).min()
+    highest_high = df["High"].rolling(STOCH_PERIOD).max()
     denominator = highest_high - lowest_low
 
     k = (df["Close"] - lowest_low) / denominator * 100
@@ -180,25 +198,17 @@ def calculate_strength(high, low, close):
     pair_rows = []
 
     for p in pair_defs:
-        symbol = p["symbol"]
+        df = make_ohlc(high, low, close, p["symbol"])
 
-        if symbol not in close.columns:
+        if df is None:
             continue
 
-        df = pd.concat([high[symbol], low[symbol], close[symbol]], axis=1).dropna()
-        df.columns = ["High", "Low", "Close"]
+        score = ichimoku_score(df)
 
-        if len(df) < 90:
+        if score is None:
             continue
 
-        result = ichimoku_score(df)
-
-        if result is None:
-            continue
-
-        score, details = result
-
-        stoch_value = stochastic_k(df, stoch_period)
+        stoch = stochastic_k(df)
 
         strength[p["base"]] += score
         strength[p["quote"]] -= score
@@ -209,20 +219,17 @@ def calculate_strength(high, low, close):
             "Pair": p["pair"],
             "Base": p["base"],
             "Quote": p["quote"],
-            "Ichimoku Score": score,
-            "Stoch %K": stoch_value,
-            "Details": details
+            "Score": score,
+            "Stoch": stoch
         })
 
     ranking = pd.Series({
-        ccy: strength[ccy] / counts[ccy] if counts[ccy] > 0 else np.nan
+        ccy: strength[ccy] / counts[ccy]
         for ccy in currencies
-    }).dropna().sort_values(ascending=False)
+        if counts[ccy] > 0
+    }).sort_values(ascending=False)
 
     pair_df = pd.DataFrame(pair_rows)
-
-    if not pair_df.empty:
-        pair_df = pair_df.sort_values("Ichimoku Score", ascending=False)
 
     return ranking, pair_df
 
@@ -231,58 +238,34 @@ def find_watch_pair(strongest, weakest):
     for p in pair_defs:
         if p["base"] == strongest and p["quote"] == weakest:
             return p["pair"], "買い目線"
+
         if p["base"] == weakest and p["quote"] == strongest:
             return p["pair"], "売り目線"
 
     return f"{strongest}{weakest}", "監視"
 
 
-def get_pair_row(pair_df, pair):
+def get_warning_mark(pair_df, watch_pair):
     if pair_df.empty:
-        return None
+        return ""
 
-    row = pair_df[pair_df["Pair"] == pair]
+    row = pair_df[pair_df["Pair"] == watch_pair]
 
     if row.empty:
-        return None
+        return ""
 
-    return row.iloc[0]
+    stoch = row["Stoch"].iloc[0]
 
+    if pd.isna(stoch):
+        return ""
 
-def get_star_signal(pair_df, watch_pair):
-    row = get_pair_row(pair_df, watch_pair)
+    if stoch >= STOCH_UPPER or stoch <= STOCH_LOWER:
+        return " ⚠️"
 
-    if row is None:
-        return False, None, None
-
-    stoch_value = row["Stoch %K"]
-
-    if pd.isna(stoch_value):
-        return False, None, None
-
-    if stoch_value >= stoch_upper:
-        return True, "売り検討", stoch_value
-
-    if stoch_value <= stoch_lower:
-        return True, "買い検討", stoch_value
-
-    return False, None, stoch_value
+    return ""
 
 
-def strength_label(score):
-    if score >= 3:
-        return "かなり強い"
-    elif score >= 1:
-        return "強い"
-    elif score > -1:
-        return "中立"
-    elif score > -3:
-        return "弱い"
-    else:
-        return "かなり弱い"
-
-
-st.markdown('<div class="main-title">💱 Currency Strength</div>', unsafe_allow_html=True)
+st.markdown('<div class="title">💱 Currency Strength</div>', unsafe_allow_html=True)
 
 timeframe = st.radio(
     "時間足",
@@ -294,31 +277,31 @@ if timeframe == "5分足":
     interval = "5m"
     period = "5d"
     resample_4h = False
-    timeframe_note = "5分足 / 一目均衡表スコア / 初動重視 / ★はストキャス逆張り"
+    note = "5分足"
 
 elif timeframe == "1時間足":
     interval = "1h"
     period = "60d"
     resample_4h = False
-    timeframe_note = "1時間足 / 一目均衡表スコア / デイトレ確認"
+    note = "1時間足"
 
 else:
     interval = "1h"
     period = "180d"
     resample_4h = True
-    timeframe_note = "4時間足 / 一目均衡表スコア / 上位足確認"
+    note = "4時間足"
 
-st.markdown(f'<div class="sub-title">{timeframe_note}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="subtitle">{note}</div>', unsafe_allow_html=True)
 
-refresh_col, time_col = st.columns([1, 2])
+col_refresh, col_time = st.columns([1, 2])
 
-with refresh_col:
+with col_refresh:
     if st.button("更新", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-with time_col:
-    st.caption(f"Checked: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+with col_time:
+    st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 symbols = [p["symbol"] for p in pair_defs]
 
@@ -327,94 +310,39 @@ try:
     ranking, pair_df = calculate_strength(high, low, close)
 
     if ranking.empty:
-        st.error("データを取得できませんでした。時間をおいて再度試してください。")
+        st.error("データを取得できませんでした。")
         st.stop()
 
     strongest = ranking.index[0]
     weakest = ranking.index[-1]
     watch_pair, direction = find_watch_pair(strongest, weakest)
+    warning = get_warning_mark(pair_df, watch_pair)
 
     st.markdown(
         f"""
-        <div class="watch-card">
-            <div class="small-note">Main Watch Pair</div>
-            <div class="watch-pair">{watch_pair}</div>
-            <div class="watch-direction">{direction}</div>
-            <div class="small-note">{strongest} strongest / {weakest} weakest</div>
+        <div class="watch">
+            <div class="watch-label">Main Watch Pair</div>
+            <div class="watch-pair">{watch_pair}{warning}</div>
+            <div class="watch-dir">{direction}</div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    if timeframe == "5分足":
-        show_star, star_direction, stoch_value = get_star_signal(pair_df, watch_pair)
-
-        if show_star:
-            st.markdown(
-                f"""
-                <div class="watch-card">
-                    <div class="small-note">★ Watch Pair</div>
-                    <div class="watch-pair">{watch_pair}</div>
-                    <div class="watch-direction">{star_direction}</div>
-                    <div class="small-note">
-                        Stoch %K {stoch_value:.1f} / 逆張り候補
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.metric("Strongest", strongest, f"{ranking.iloc[0]:.2f}")
-
-    with col2:
-        st.metric("Weakest", weakest, f"{ranking.iloc[-1]:.2f}")
-
     st.subheader("通貨ランキング")
 
     for i, (ccy, score) in enumerate(ranking.items(), start=1):
-        label = strength_label(score)
-
         st.markdown(
             f"""
-            <div class="currency-card">
-                <div class="currency-line">
-                    <div class="currency-rank">{i}. {ccy}</div>
-                    <div class="currency-score">{score:.2f}</div>
+            <div class="rank-card">
+                <div class="rank-line">
+                    <div class="rank-name">{i}. {ccy}</div>
+                    <div class="rank-score">{score:.2f}</div>
                 </div>
-                <div class="small-note">{label}</div>
             </div>
             """,
             unsafe_allow_html=True
         )
-
-    st.subheader("通貨強弱チャート")
-    st.bar_chart(ranking.rename("Strength").to_frame())
-
-    st.subheader("ペア別 一目スコア")
-
-    if not pair_df.empty:
-        display_pair_df = pair_df[["Pair", "Ichimoku Score", "Stoch %K"]].copy()
-        display_pair_df["Ichimoku Score"] = display_pair_df["Ichimoku Score"].round(2)
-        display_pair_df["Stoch %K"] = display_pair_df["Stoch %K"].round(1)
-
-        st.dataframe(
-            display_pair_df,
-            hide_index=True,
-            use_container_width=True
-        )
-
-        with st.expander("ペア別スコア内訳"):
-            detail_df = pair_df[["Pair", "Ichimoku Score", "Stoch %K", "Details"]].copy()
-            detail_df["Stoch %K"] = detail_df["Stoch %K"].round(1)
-
-            st.dataframe(
-                detail_df,
-                hide_index=True,
-                use_container_width=True
-            )
 
     valid_close = close.dropna(how="all")
 
@@ -427,11 +355,7 @@ try:
         except Exception:
             pass
 
-        st.caption(f"Last data: {last_time.strftime('%Y-%m-%d %H:%M')}")
-
-    st.caption(
-        "これは売買指示ではなく、一目均衡表スコアとストキャスに基づく通貨強弱の可視化です。"
-    )
+        st.caption(f"Last Data: {last_time.strftime('%Y-%m-%d %H:%M')}")
 
 except Exception as e:
     st.error("エラーが発生しました。")
