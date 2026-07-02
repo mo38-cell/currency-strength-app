@@ -28,7 +28,10 @@ pair_defs = [
 TENKAN_PERIOD = 9
 KIJUN_PERIOD = 26
 TENKAN_SLOPE_LOOKBACK = 3
-STOCH_PERIOD = 14
+
+STOCH_K_PERIOD = 14
+STOCH_D_PERIOD = 3
+STOCH_SLOWING = 5
 STOCH_UPPER = 93
 STOCH_LOWER = 7
 
@@ -133,7 +136,12 @@ def make_ohlc(high, low, close, symbol):
 
     df.columns = ["High", "Low", "Close"]
 
-    if len(df) < KIJUN_PERIOD + TENKAN_SLOPE_LOOKBACK + 1:
+    min_len = max(
+        KIJUN_PERIOD + TENKAN_SLOPE_LOOKBACK + 1,
+        STOCH_K_PERIOD + STOCH_SLOWING + STOCH_D_PERIOD + 1
+    )
+
+    if len(df) < min_len:
         return None
 
     return df
@@ -181,15 +189,18 @@ def ichimoku_score(df):
     return score
 
 
-def stochastic_k(df):
-    lowest_low = df["Low"].rolling(STOCH_PERIOD).min()
-    highest_high = df["High"].rolling(STOCH_PERIOD).max()
+def stochastic_slow(df):
+    lowest_low = df["Low"].rolling(STOCH_K_PERIOD).min()
+    highest_high = df["High"].rolling(STOCH_K_PERIOD).max()
     denominator = highest_high - lowest_low
 
-    k = (df["Close"] - lowest_low) / denominator * 100
-    k = k.replace([np.inf, -np.inf], np.nan)
+    fast_k = (df["Close"] - lowest_low) / denominator * 100
+    fast_k = fast_k.replace([np.inf, -np.inf], np.nan)
 
-    return k.iloc[-1]
+    slow_k = fast_k.rolling(STOCH_SLOWING).mean()
+    slow_d = slow_k.rolling(STOCH_D_PERIOD).mean()
+
+    return slow_k.iloc[-1], slow_d.iloc[-1]
 
 
 def calculate_strength(high, low, close):
@@ -208,7 +219,7 @@ def calculate_strength(high, low, close):
         if score is None:
             continue
 
-        stoch = stochastic_k(df)
+        stoch_k, stoch_d = stochastic_slow(df)
 
         strength[p["base"]] += score
         strength[p["quote"]] -= score
@@ -220,7 +231,8 @@ def calculate_strength(high, low, close):
             "Base": p["base"],
             "Quote": p["quote"],
             "Score": score,
-            "Stoch": stoch
+            "StochK": stoch_k,
+            "StochD": stoch_d
         })
 
     ranking = pd.Series({
@@ -254,12 +266,12 @@ def get_warning_mark(pair_df, watch_pair):
     if row.empty:
         return ""
 
-    stoch = row["Stoch"].iloc[0]
+    stoch_k = row["StochK"].iloc[0]
 
-    if pd.isna(stoch):
+    if pd.isna(stoch_k):
         return ""
 
-    if stoch >= STOCH_UPPER or stoch <= STOCH_LOWER:
+    if stoch_k >= STOCH_UPPER or stoch_k <= STOCH_LOWER:
         return " ⚠️"
 
     return ""
@@ -315,6 +327,7 @@ try:
 
     strongest = ranking.index[0]
     weakest = ranking.index[-1]
+
     watch_pair, direction = find_watch_pair(strongest, weakest)
     warning = get_warning_mark(pair_df, watch_pair)
 
