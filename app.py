@@ -31,60 +31,24 @@ kijun_lookback = 5
 st.markdown(
     """
     <style>
-    .main-title {
-        font-size: 1.8rem;
-        font-weight: 800;
-        text-align: center;
-        margin-bottom: 0.2rem;
-    }
-    .sub-title {
-        font-size: 0.9rem;
-        text-align: center;
-        opacity: 0.75;
-        margin-bottom: 1.0rem;
-    }
+    .main-title {font-size: 1.8rem; font-weight: 800; text-align: center;}
+    .sub-title {font-size: 0.9rem; text-align: center; opacity: 0.75; margin-bottom: 1.0rem;}
     .watch-card {
-        border-radius: 18px;
-        padding: 18px;
-        margin: 12px 0px;
+        border-radius: 18px; padding: 18px; margin: 12px 0px;
         border: 1px solid rgba(128,128,128,0.25);
-        background: rgba(128,128,128,0.08);
-        text-align: center;
+        background: rgba(128,128,128,0.08); text-align: center;
     }
-    .watch-pair {
-        font-size: 2.1rem;
-        font-weight: 900;
-        margin-bottom: 4px;
-    }
-    .watch-direction {
-        font-size: 1.2rem;
-        font-weight: 700;
-    }
+    .watch-pair {font-size: 2.1rem; font-weight: 900;}
+    .watch-direction {font-size: 1.2rem; font-weight: 700;}
     .currency-card {
-        border-radius: 14px;
-        padding: 12px 14px;
-        margin-bottom: 8px;
+        border-radius: 14px; padding: 12px 14px; margin-bottom: 8px;
         border: 1px solid rgba(128,128,128,0.20);
         background: rgba(128,128,128,0.06);
     }
-    .currency-line {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-    .currency-rank {
-        font-size: 1.15rem;
-        font-weight: 800;
-    }
-    .currency-score {
-        font-size: 1.05rem;
-        font-weight: 700;
-    }
-    .small-note {
-        font-size: 0.8rem;
-        opacity: 0.7;
-        text-align: center;
-    }
+    .currency-line {display: flex; justify-content: space-between; align-items: center;}
+    .currency-rank {font-size: 1.15rem; font-weight: 800;}
+    .currency-score {font-size: 1.05rem; font-weight: 700;}
+    .small-note {font-size: 0.8rem; opacity: 0.7; text-align: center;}
     </style>
     """,
     unsafe_allow_html=True
@@ -120,23 +84,11 @@ def get_data(symbols, period, interval, resample_4h=False):
 
 
 def ichimoku_score(df):
-    tenkan = (
-        df["High"].rolling(9).max()
-        + df["Low"].rolling(9).min()
-    ) / 2
-
-    kijun = (
-        df["High"].rolling(26).max()
-        + df["Low"].rolling(26).min()
-    ) / 2
+    tenkan = (df["High"].rolling(9).max() + df["Low"].rolling(9).min()) / 2
+    kijun = (df["High"].rolling(26).max() + df["Low"].rolling(26).min()) / 2
 
     senkou_a = ((tenkan + kijun) / 2).shift(26)
-
-    senkou_b = (
-        df["High"].rolling(52).max()
-        + df["Low"].rolling(52).min()
-    ) / 2
-    senkou_b = senkou_b.shift(26)
+    senkou_b = ((df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2).shift(26)
 
     latest_close = df["Close"].iloc[-1]
     latest_tenkan = tenkan.iloc[-1]
@@ -144,14 +96,7 @@ def ichimoku_score(df):
     latest_senkou_a = senkou_a.iloc[-1]
     latest_senkou_b = senkou_b.iloc[-1]
 
-    needed = [
-        latest_tenkan,
-        latest_kijun,
-        latest_senkou_a,
-        latest_senkou_b,
-    ]
-
-    if any(pd.isna(x) for x in needed):
+    if any(pd.isna(x) for x in [latest_tenkan, latest_kijun, latest_senkou_a, latest_senkou_b]):
         return None
 
     cloud_upper = max(latest_senkou_a, latest_senkou_b)
@@ -160,7 +105,6 @@ def ichimoku_score(df):
     score = 0
     details = []
 
-    # 1. 終値と転換線
     if latest_close > latest_tenkan:
         score += 1
         details.append("終値＞転換線 +1")
@@ -170,22 +114,19 @@ def ichimoku_score(df):
     else:
         details.append("終値＝転換線 0")
 
-    # 2. 転換線の向き
     if len(tenkan.dropna()) > tenkan_lookback:
         tenkan_now = tenkan.iloc[-1]
         tenkan_past = tenkan.iloc[-1 - tenkan_lookback]
 
-        if not pd.isna(tenkan_past):
-            if tenkan_now > tenkan_past:
-                score += 1
-                details.append("転換線上向き +1")
-            elif tenkan_now < tenkan_past:
-                score -= 1
-                details.append("転換線下向き -1")
-            else:
-                details.append("転換線横ばい 0")
+        if tenkan_now > tenkan_past:
+            score += 1
+            details.append("転換線上向き +1")
+        elif tenkan_now < tenkan_past:
+            score -= 1
+            details.append("転換線下向き -1")
+        else:
+            details.append("転換線横ばい 0")
 
-    # 3. 終値と基準線
     if latest_close > latest_kijun:
         score += 1
         details.append("終値＞基準線 +1")
@@ -195,22 +136,19 @@ def ichimoku_score(df):
     else:
         details.append("終値＝基準線 0")
 
-    # 4. 基準線の向き
     if len(kijun.dropna()) > kijun_lookback:
         kijun_now = kijun.iloc[-1]
         kijun_past = kijun.iloc[-1 - kijun_lookback]
 
-        if not pd.isna(kijun_past):
-            if kijun_now > kijun_past:
-                score += 1
-                details.append("基準線上向き +1")
-            elif kijun_now < kijun_past:
-                score -= 1
-                details.append("基準線下向き -1")
-            else:
-                details.append("基準線横ばい 0")
+        if kijun_now > kijun_past:
+            score += 1
+            details.append("基準線上向き +1")
+        elif kijun_now < kijun_past:
+            score -= 1
+            details.append("基準線下向き -1")
+        else:
+            details.append("基準線横ばい 0")
 
-    # 5. 雲との位置
     if latest_close > cloud_upper:
         score += 1
         details.append("終値＞雲上限 +1")
@@ -230,18 +168,11 @@ def calculate_strength(high, low, close):
 
     for p in pair_defs:
         symbol = p["symbol"]
-        pair = p["pair"]
-        base = p["base"]
-        quote = p["quote"]
 
         if symbol not in close.columns:
             continue
 
-        df = pd.concat(
-            [high[symbol], low[symbol], close[symbol]],
-            axis=1
-        ).dropna()
-
+        df = pd.concat([high[symbol], low[symbol], close[symbol]], axis=1).dropna()
         df.columns = ["High", "Low", "Close"]
 
         if len(df) < 90:
@@ -254,25 +185,24 @@ def calculate_strength(high, low, close):
 
         score, details = result
 
-        strength[base] += score
-        strength[quote] -= score
-        counts[base] += 1
-        counts[quote] += 1
+        strength[p["base"]] += score
+        strength[p["quote"]] -= score
+        counts[p["base"]] += 1
+        counts[p["quote"]] += 1
 
         pair_rows.append({
-            "Pair": pair,
-            "Base": base,
-            "Quote": quote,
+            "Pair": p["pair"],
+            "Base": p["base"],
+            "Quote": p["quote"],
             "Ichimoku Score": score,
             "Details": details
         })
 
-    strength_avg = {}
+    ranking = pd.Series({
+        ccy: strength[ccy] / counts[ccy] if counts[ccy] > 0 else np.nan
+        for ccy in currencies
+    }).dropna().sort_values(ascending=False)
 
-    for ccy in currencies:
-        strength_avg[ccy] = strength[ccy] / counts[ccy] if counts[ccy] > 0 else np.nan
-
-    ranking = pd.Series(strength_avg).dropna().sort_values(ascending=False)
     pair_df = pd.DataFrame(pair_rows)
 
     if not pair_df.empty:
@@ -285,11 +215,48 @@ def find_watch_pair(strongest, weakest):
     for p in pair_defs:
         if p["base"] == strongest and p["quote"] == weakest:
             return p["pair"], "買い目線"
-
         if p["base"] == weakest and p["quote"] == strongest:
             return p["pair"], "売り目線"
 
     return f"{strongest}{weakest}", "監視"
+
+
+def get_pair_score(pair_df, pair):
+    if pair_df.empty:
+        return None
+
+    row = pair_df[pair_df["Pair"] == pair]
+
+    if row.empty:
+        return None
+
+    return float(row["Ichimoku Score"].iloc[0])
+
+
+def should_show_star(timeframe, ranking, pair_df_5m, pair_df_1h, watch_pair, direction):
+    if timeframe != "5分足":
+        return False, None, None
+
+    spread_score = ranking.iloc[0] - ranking.iloc[-1]
+    pair_score_5m = get_pair_score(pair_df_5m, watch_pair)
+    pair_score_1h = get_pair_score(pair_df_1h, watch_pair)
+
+    if pair_score_5m is None or pair_score_1h is None:
+        return False, pair_score_5m, pair_score_1h
+
+    if spread_score < 6:
+        return False, pair_score_5m, pair_score_1h
+
+    if abs(pair_score_5m) < 4:
+        return False, pair_score_5m, pair_score_1h
+
+    if direction == "買い目線" and pair_score_1h <= 1:
+        return True, pair_score_5m, pair_score_1h
+
+    if direction == "売り目線" and pair_score_1h >= -1:
+        return True, pair_score_5m, pair_score_1h
+
+    return False, pair_score_5m, pair_score_1h
 
 
 def strength_label(score):
@@ -305,10 +272,7 @@ def strength_label(score):
         return "かなり弱い"
 
 
-st.markdown(
-    '<div class="main-title">💱 Currency Strength</div>',
-    unsafe_allow_html=True
-)
+st.markdown('<div class="main-title">💱 Currency Strength</div>', unsafe_allow_html=True)
 
 timeframe = st.radio(
     "時間足",
@@ -334,10 +298,7 @@ else:
     resample_4h = True
     timeframe_note = "4時間足 / 一目均衡表スコア / 上位足確認"
 
-st.markdown(
-    f'<div class="sub-title">{timeframe_note}</div>',
-    unsafe_allow_html=True
-)
+st.markdown(f'<div class="sub-title">{timeframe_note}</div>', unsafe_allow_html=True)
 
 refresh_col, time_col = st.columns([1, 2])
 
@@ -375,6 +336,36 @@ try:
         unsafe_allow_html=True
     )
 
+    if timeframe == "5分足":
+        high_1h, low_1h, close_1h = get_data(symbols, "60d", "1h", False)
+        ranking_1h, pair_df_1h = calculate_strength(high_1h, low_1h, close_1h)
+
+        show_star, pair_score_5m, pair_score_1h = should_show_star(
+            timeframe,
+            ranking,
+            pair_df,
+            pair_df_1h,
+            watch_pair,
+            direction
+        )
+
+        if show_star:
+            star_direction = "売り検討" if direction == "買い目線" else "買い検討"
+
+            st.markdown(
+                f"""
+                <div class="watch-card">
+                    <div class="small-note">★ Watch Pair</div>
+                    <div class="watch-pair">{watch_pair}</div>
+                    <div class="watch-direction">{star_direction}</div>
+                    <div class="small-note">
+                        短期反転候補 / 5分足スコア {pair_score_5m:.0f} / 1時間足スコア {pair_score_1h:.0f}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -402,9 +393,7 @@ try:
         )
 
     st.subheader("通貨強弱チャート")
-
-    chart_df = ranking.rename("Strength").to_frame()
-    st.bar_chart(chart_df)
+    st.bar_chart(ranking.rename("Strength").to_frame())
 
     st.subheader("ペア別 一目スコア")
 
