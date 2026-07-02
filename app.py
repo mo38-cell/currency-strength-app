@@ -27,6 +27,9 @@ pair_defs = [
 
 tenkan_lookback = 3
 kijun_lookback = 5
+stoch_period = 14
+stoch_upper = 93
+stoch_lower = 7
 
 st.markdown(
     """
@@ -86,7 +89,6 @@ def get_data(symbols, period, interval, resample_4h=False):
 def ichimoku_score(df):
     tenkan = (df["High"].rolling(9).max() + df["Low"].rolling(9).min()) / 2
     kijun = (df["High"].rolling(26).max() + df["Low"].rolling(26).min()) / 2
-
     senkou_a = ((tenkan + kijun) / 2).shift(26)
     senkou_b = ((df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2).shift(26)
 
@@ -161,6 +163,17 @@ def ichimoku_score(df):
     return score, " / ".join(details)
 
 
+def stochastic_k(df, k_period=14):
+    lowest_low = df["Low"].rolling(k_period).min()
+    highest_high = df["High"].rolling(k_period).max()
+    denominator = highest_high - lowest_low
+
+    k = (df["Close"] - lowest_low) / denominator * 100
+    k = k.replace([np.inf, -np.inf], np.nan)
+
+    return k.iloc[-1]
+
+
 def calculate_strength(high, low, close):
     strength = {ccy: 0.0 for ccy in currencies}
     counts = {ccy: 0 for ccy in currencies}
@@ -185,6 +198,8 @@ def calculate_strength(high, low, close):
 
         score, details = result
 
+        stoch_value = stochastic_k(df, stoch_period)
+
         strength[p["base"]] += score
         strength[p["quote"]] -= score
         counts[p["base"]] += 1
@@ -195,6 +210,7 @@ def calculate_strength(high, low, close):
             "Base": p["base"],
             "Quote": p["quote"],
             "Ichimoku Score": score,
+            "Stoch %K": stoch_value,
             "Details": details
         })
 
@@ -221,7 +237,7 @@ def find_watch_pair(strongest, weakest):
     return f"{strongest}{weakest}", "監視"
 
 
-def get_pair_score(pair_df, pair):
+def get_pair_row(pair_df, pair):
     if pair_df.empty:
         return None
 
@@ -230,33 +246,27 @@ def get_pair_score(pair_df, pair):
     if row.empty:
         return None
 
-    return float(row["Ichimoku Score"].iloc[0])
+    return row.iloc[0]
 
 
-def should_show_star(timeframe, ranking, pair_df_5m, pair_df_1h, watch_pair, direction):
-    if timeframe != "5分足":
+def get_star_signal(pair_df, watch_pair):
+    row = get_pair_row(pair_df, watch_pair)
+
+    if row is None:
         return False, None, None
 
-    spread_score = ranking.iloc[0] - ranking.iloc[-1]
-    pair_score_5m = get_pair_score(pair_df_5m, watch_pair)
-    pair_score_1h = get_pair_score(pair_df_1h, watch_pair)
+    stoch_value = row["Stoch %K"]
 
-    if pair_score_5m is None or pair_score_1h is None:
-        return False, pair_score_5m, pair_score_1h
+    if pd.isna(stoch_value):
+        return False, None, None
 
-    if spread_score < 6:
-        return False, pair_score_5m, pair_score_1h
+    if stoch_value >= stoch_upper:
+        return True, "売り検討", stoch_value
 
-    if abs(pair_score_5m) < 4:
-        return False, pair_score_5m, pair_score_1h
+    if stoch_value <= stoch_lower:
+        return True, "買い検討", stoch_value
 
-    if direction == "買い目線" and pair_score_1h <= 1:
-        return True, pair_score_5m, pair_score_1h
-
-    if direction == "売り目線" and pair_score_1h >= -1:
-        return True, pair_score_5m, pair_score_1h
-
-    return False, pair_score_5m, pair_score_1h
+    return False, None, stoch_value
 
 
 def strength_label(score):
@@ -284,7 +294,7 @@ if timeframe == "5分足":
     interval = "5m"
     period = "5d"
     resample_4h = False
-    timeframe_note = "5分足 / 一目均衡表スコア / 初動重視"
+    timeframe_note = "5分足 / 一目均衡表スコア / 初動重視 / ★はストキャス逆張り"
 
 elif timeframe == "1時間足":
     interval = "1h"
@@ -337,21 +347,9 @@ try:
     )
 
     if timeframe == "5分足":
-        high_1h, low_1h, close_1h = get_data(symbols, "60d", "1h", False)
-        ranking_1h, pair_df_1h = calculate_strength(high_1h, low_1h, close_1h)
-
-        show_star, pair_score_5m, pair_score_1h = should_show_star(
-            timeframe,
-            ranking,
-            pair_df,
-            pair_df_1h,
-            watch_pair,
-            direction
-        )
+        show_star, star_direction, stoch_value = get_star_signal(pair_df, watch_pair)
 
         if show_star:
-            star_direction = "売り検討" if direction == "買い目線" else "買い検討"
-
             st.markdown(
                 f"""
                 <div class="watch-card">
@@ -359,7 +357,7 @@ try:
                     <div class="watch-pair">{watch_pair}</div>
                     <div class="watch-direction">{star_direction}</div>
                     <div class="small-note">
-                        短期反転候補 / 5分足スコア {pair_score_5m:.0f} / 1時間足スコア {pair_score_1h:.0f}
+                        Stoch %K {stoch_value:.1f} / 逆張り候補
                     </div>
                 </div>
                 """,
@@ -398,8 +396,9 @@ try:
     st.subheader("ペア別 一目スコア")
 
     if not pair_df.empty:
-        display_pair_df = pair_df[["Pair", "Ichimoku Score"]].copy()
+        display_pair_df = pair_df[["Pair", "Ichimoku Score", "Stoch %K"]].copy()
         display_pair_df["Ichimoku Score"] = display_pair_df["Ichimoku Score"].round(2)
+        display_pair_df["Stoch %K"] = display_pair_df["Stoch %K"].round(1)
 
         st.dataframe(
             display_pair_df,
@@ -408,7 +407,9 @@ try:
         )
 
         with st.expander("ペア別スコア内訳"):
-            detail_df = pair_df[["Pair", "Ichimoku Score", "Details"]].copy()
+            detail_df = pair_df[["Pair", "Ichimoku Score", "Stoch %K", "Details"]].copy()
+            detail_df["Stoch %K"] = detail_df["Stoch %K"].round(1)
+
             st.dataframe(
                 detail_df,
                 hide_index=True,
@@ -429,7 +430,7 @@ try:
         st.caption(f"Last data: {last_time.strftime('%Y-%m-%d %H:%M')}")
 
     st.caption(
-        "これは売買指示ではなく、一目均衡表スコアに基づく通貨強弱の可視化です。"
+        "これは売買指示ではなく、一目均衡表スコアとストキャスに基づく通貨強弱の可視化です。"
     )
 
 except Exception as e:
