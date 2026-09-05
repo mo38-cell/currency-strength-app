@@ -38,21 +38,28 @@ pair_defs = [
 
 
 # =========================================================
-# Indicators
+# Indicator settings
 # =========================================================
 
+# 一目均衡表 基準線
 KIJUN_PERIOD = 26
 
-STOCH_K_PERIOD = 14
-STOCH_SLOWING = 5
-STOCH_D_PERIOD = 3
+# Slow Stochastic
+# %K = 14
+# %D = 3
+# Slow = 5
 
+STOCH_K_PERIOD = 14
+STOCH_D_PERIOD = 3
+STOCH_SLOWING = 5
+
+# 警戒水準
 STOCH_UPPER = 93
 STOCH_LOWER = 7
 
 
 # =========================================================
-# Download
+# Download data
 # =========================================================
 
 @st.cache_data(ttl=900)
@@ -82,6 +89,7 @@ def get_data(symbols, period, interval, resample_4h=False):
         low = data[["Low"]].copy()
         close = data[["Close"]].copy()
 
+    # 4時間足は1時間足から作成
     if resample_4h:
 
         high = high.resample("4h").max()
@@ -132,7 +140,7 @@ def make_ohlc(high, low, close, symbol):
 
 
 # =========================================================
-# Kijun
+# Kijun score
 # =========================================================
 
 def kijun_score(df):
@@ -153,9 +161,11 @@ def kijun_score(df):
     if pd.isna(latest_kijun):
         return None
 
+    # 終値が基準線より上
     if latest_close > latest_kijun:
         return 1
 
+    # 終値が基準線より下
     if latest_close < latest_kijun:
         return -1
 
@@ -164,6 +174,7 @@ def kijun_score(df):
 
 # =========================================================
 # Slow Stochastic
+# %K 14 / %D 3 / Slow 5
 # =========================================================
 
 def stochastic_slow(df):
@@ -193,12 +204,14 @@ def stochastic_slow(df):
         np.nan
     )
 
+    # Slow = 5
     slow_k = (
         fast_k
         .rolling(STOCH_SLOWING)
         .mean()
     )
 
+    # %D = 3
     slow_d = (
         slow_k
         .rolling(STOCH_D_PERIOD)
@@ -248,7 +261,7 @@ def calculate_strength(high, low, close):
 
         stoch_k, stoch_d = stochastic_slow(df)
 
-        # 基準線のみで通貨強弱を評価
+        # 基準線だけで通貨強弱を計算
         strength[p["base"]] += score
         strength[p["quote"]] -= score
 
@@ -283,13 +296,14 @@ def calculate_strength(high, low, close):
 
 
 # =========================================================
-# Watch pair
+# Main Watch Pair
 # =========================================================
 
 def find_watch_pair(strongest, weakest):
 
     for p in pair_defs:
 
+        # 最強 / 最弱
         if (
             p["base"] == strongest
             and p["quote"] == weakest
@@ -300,6 +314,7 @@ def find_watch_pair(strongest, weakest):
                 "買い目線"
             )
 
+        # 最弱 / 最強
         if (
             p["base"] == weakest
             and p["quote"] == strongest
@@ -373,21 +388,35 @@ st.title("💱 Currency Strength")
 # Timeframe
 # =========================================================
 
+timeframe_options = [
+    "5分足",
+    "15分足",
+    "1時間足",
+    "4時間足"
+]
+
 timeframe = st.radio(
     "時間足",
-    [
-        "5分足",
-        "1時間足",
-        "4時間足"
-    ],
+    timeframe_options,
+    index=1,   # ← 初期表示を15分足にする
     horizontal=True
 )
 
+
+# =========================================================
+# Timeframe settings
+# =========================================================
 
 if timeframe == "5分足":
 
     interval = "5m"
     period = "5d"
+    resample_4h = False
+
+elif timeframe == "15分足":
+
+    interval = "15m"
+    period = "30d"
     resample_4h = False
 
 elif timeframe == "1時間足":
@@ -404,7 +433,7 @@ else:
 
 
 # =========================================================
-# Refresh
+# Refresh / Current time
 # =========================================================
 
 col1, col2 = st.columns(
@@ -492,6 +521,10 @@ try:
     weakest = ranking.index[-1]
 
 
+    # =====================================================
+    # Watch pair
+    # =====================================================
+
     watch_pair, direction = find_watch_pair(
         strongest,
         weakest
@@ -551,7 +584,7 @@ try:
 
 
     # =====================================================
-    # Ranking
+    # Currency ranking
     # =====================================================
 
     st.subheader(
